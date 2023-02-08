@@ -1,0 +1,36 @@
+DEFINE INSTRUMENT BIFROST_secondary (
+)
+DECLARE
+%{
+%}
+
+USERVARS %{
+double flag;
+int event_charge_left;
+int event_charge_right;
+double event_time;
+int RING;
+int FEN;
+int TUBE;
+%}
+
+INITIALIZE
+%{
+%}
+TRACE
+
+COMPONENT Origin = Progress_bar() AT (0,0,0) ABSOLUTE
+COMPONENT Triplet = Detector_tubes(
+  filename="triplet.dat", 
+  charge_a="event_charge_left",
+  charge_b="event_charge_right", detection_time="event_time",
+  radius = 0.0125 / 2,
+  width=0.01, height=0.2,
+  N=3)
+AT (0,0,0) RELATIVE PREVIOUS
+
+FINALLY
+%{
+%}
+END
+
