@@ -20,14 +20,40 @@ INITIALIZE
 TRACE
 
 COMPONENT Origin = Progress_bar() AT (0,0,0) ABSOLUTE
+COMPONENT Source = Source_simple(yheight=0.01, xwidth=1, dist=0.5, focus_xw=0.8, focus_yh=0.5, lambda0=1.5, dlambda=0.1)
+AT (0,0.1,0) RELATIVE Origin
+
 COMPONENT Triplet = Detector_tubes(
-  filename="triplet.dat", 
+  wire_filename="triplet_wire.dat", 
+  pack_filename="triplet_pack.dat",
+  wires_in_series=1,
   charge_a="event_charge_left",
   charge_b="event_charge_right", detection_time="event_time",
   radius = 0.0125 / 2,
-  width=0.01, height=0.2,
-  N=3)
-AT (0,0,0) RELATIVE PREVIOUS
+  width=0.05, height=0.5,
+  N=3,
+  restore_neutron=1
+)
+AT (0,0,0.1) RELATIVE Origin
+
+COMPONENT Septuplet = Detector_tubes(
+  wire_filename="septuplet_wire.dat", pack_filename="septuplet_pack.dat", wires_in_series=1,
+  charge_a="event_charge_left", charge_b="event_charge_right", detection_time="event_time",
+  radius=0.01, width=0.2, height=0.5, curvature=0.5, N=7, restore_neutron=1)
+AT (0,0,0.2) RELATIVE Origin
+
+COMPONENT Single = Detector_tubes(radius=0.0254/2, height=0.5, pack_filename="one_tube.dat",
+  charge_a="event_charge_left", charge_b="event_charge_right", detection_time="event_time",
+  restore_neutron=1
+)
+AT (0,0.1,0.4) RELATIVE Origin
+
+COMPONENT Array = Detector_tubes(radius=0.0254/2, height=0.5, N=24, width=0.84, pack_filename="array_pack.dat",
+  charge_a="event_charge_left", charge_b="event_charge_right", detection_time="event_time"
+  , restore_neutron=1
+  ,curvature=1
+)
+AT (0,0,0.5) RELATIVE Origin
 
 FINALLY
 %{

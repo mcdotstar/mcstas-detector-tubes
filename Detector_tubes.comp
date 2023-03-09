@@ -21,6 +21,9 @@
 * %P
 * INPUT PARAMETERS:
 * N:               The number of serially connected tubes, default=1, must be positive definite [1]
+* wires_in_series: If non-zero, the tubes have all wires connected in series [1]
+* first_wire:      The index of the first wire, for setting the neutron property TUBE properly. [1]
+* wire_step:       The difference in wire index between tube i and i+1 [1]
 * radius:          The common tube radius [m]
 * radii:           A pointer to a length-N array of doubles with per-tube radii [m]
 * positions:       A pointer to a length-3N array of doubles with the per-tube center of mass
@@ -37,44 +40,45 @@
 * levels:          The number of charge-division levels [1]
 * threshold:       The minimum used level when simulating charge division [1]
 * Rs:              A length-N+1 array of inter-tube resistances, with first and last values giving contact resistances  [ohm]
+* preRs:           A length-N array of wire contact resistances, Rs takes precedence; if used in serial mode
+*                  the sum of the pre- and post-wire contact resistances is used *between* tubes. [ohm]
+* postRs:          A length-N array of wire contact resistances, Rs takes precedence; if used in serial mode
+*                  the sum of the pre- and post-wire contact resistances is used *between* tubes. [ohm]
 * R:               A constant resistance used for all inter-tube resistances if Rs is undefined. [ohm]
 *                  If used, the contact resistances are assumed to be zero.
 * rhos:            A length-N array of annode wire resitivities [ohm/m]
 * rho:             A single resistivity use for all annode wires if rhos is undefined. [ohm/m]
 * dead_length:     A characteristic length over which each tube loses sensitivity towards its end [m]
-* filename:        Name of file in which to store the detector image [string]
+* wire_filename:        Name of file in which to store the detector image [string]
+* pack_filename:
 * He3_pressure:    If finite, apply a detector efficiency correction [bar]
 * charge_a:        The string name of the neutron property used to record one integrated voltage [str]
 * charge_b:        The string name of the neutron property used to record one integrated voltage [str]
 * detection_time:  The string name of the neutron property used to record event detection time [str]
+* tube_index_name: The string name of the neutron property used to record detecting wire readout [str]
 * restore_neutron: If set, the monitor does not influence the neutron state [1]
-* nowritefile: [1] If set, monitor will skip writing to disk
 *
-* OUTPUT PARAMETERS:
-*
-* detector_N:    Array of neutron counts
-* detector_p:    Array of neutron weight counts
-* detector_p2:   Array of second moments
-*
-* %E
+* 
 ******************************************************************************/
 
 DEFINE COMPONENT Detector_tubes
 DEFINITION PARAMETERS ()
-  SETTING PARAMETERS (int N=1,
-    int no=300, string filename=0, int levels=4096, int threshold=400,
+  SETTING PARAMETERS (int N=1, int wires_in_series=0, int first_wire=0, int wire_step=1,
+    int no=100, string wire_filename=0, string pack_filename=0,  int levels=4096, int threshold=400,
     width=0, height=0,
     radius=0, R=0, rho=5511.81, dead_length=0.0254,
     curvature = 0,
-    double * radii = NULL,
-    double * Rs = NULL,
-    double * rhos = NULL,
-    double * positions = NULL,
-    double * ends = NULL,
+    vector radii = NULL,
+    vector Rs = NULL,
+    vector preRs = NULL,
+    vector postRs = NULL,
+    vector rhos = NULL,
+    vector positions = NULL,
+    vector ends = NULL,
     He3_pressure=0,
-    string charge_a=0, string charge_b=0, string detection_time=0,
-    restore_neutron=0, int nowritefile=0)
-OUTPUT PARAMETERS (detector_N, detector_p, detector_p2)
+    string charge_a=0, string charge_b=0, string detection_time=0, string tube_index_name=0,
+    int restore_neutron=0, int check_for_intersections=1)
+OUTPUT PARAMETERS (wire_N, wire_p, wire_2)
 /* Neutron parameters: (x,y,z,vx,vy,vz,t,sx,sy,sz,p) */
 
 SHARE %{
@@ -180,13 +184,18 @@ int Detector_tubes_cylinders_intersect(double r0, double * x0, double * e0, doub
 
 DECLARE
   %{
-    double TOTAL_RESISTANCE;
+    double * TOTAL_RESISTANCE;
     int STORE_CHARGE;
     int STORE_TIME;
+    int STORE_WIRE;
     
-    DArray1d detector_N;
-    DArray1d detector_p;
-    DArray1d detector_p2;
+    DArray1d wire_N;
+    DArray1d wire_p;
+    DArray1d wire_2;
+    
+    DArray2d pack_N;
+    DArray2d pack_p;
+    DArray2d pack_2;
     
     // cylinder position & orientation parameters
     double * xangles;
@@ -195,18 +204,21 @@ DECLARE
     int allocated_positions;
     int allocated_radii;
     int allocated_rhos;
-    int allocated_rs;
+    int allocated_prers;
+    int allocated_postrs;
     int allocated_ends;
   %}
 
 INITIALIZE
   %{
-    STORE_CHARGE = 0;
-    STORE_TIME = 0;
-    
-    detector_N = create_darr1d(no);
-    detector_p = create_darr1d(no);
-    detector_p2 = create_darr1d(no);
+    if (wires_in_series){ 
+      wire_N = create_darr1d(N*no);
+      wire_p = create_darr1d(N*no);
+      wire_2 = create_darr1d(N*no);
+    }
+    pack_N = create_darr2d(N, no);
+    pack_p = create_darr2d(N, no);
+    pack_2 = create_darr2d(N, no);
     
     /* Calculate orientation angles and lengths from tube-end positions */
     lengths = calloc(N, sizeof(double));
@@ -242,13 +254,37 @@ INITIALIZE
         for (int i=0; i<N; ++i) radii[i] = radius;
         if (radii) allocated_radii = 1;
     }
-    allocated_rs = 0; 
-    if (Rs == NULL){
-        Rs = calloc(N+1, sizeof(double));
-        for (int i=1; i<N; ++i) Rs[i] = R;
-        Rs[0] = 0.;
-        Rs[N] = 0.;
-        if (Rs) allocated_rs = 1;
+    allocated_prers = 0;
+    allocated_postrs = 0;
+    if (preRs == NULL){
+        preRs = calloc(N, sizeof(double));
+        if (preRs) allocated_prers = 1;
+        if (Rs == NULL) {
+            preRs[0] = 0.;
+            for (int i=1; i<N; ++i){
+                preRs[i] = R/2;
+            }
+        } else {
+            preRs[0] = Rs[0];
+            for (int i=1; i<N; ++i){
+                preRs[i] = Rs[i]/2;
+            }
+        }
+    }
+    if (postRs == NULL){
+        postRs = calloc(N, sizeof(double));
+        if (postRs) allocated_postrs = 1;
+        if (Rs == NULL) {
+            for (int i=0; i<N-1; ++i){
+                postRs[i] = R/2;
+            }
+            postRs[N-1] = 0.;
+        } else {
+            for (int i=0; i<N-1; ++i){
+                postRs[i] = Rs[i]/2;
+            }
+            postRs[N-1] = Rs[N-1];
+        }
     }
     allocated_rhos = 0;
     if (rhos == NULL){
@@ -257,9 +293,15 @@ INITIALIZE
         if (rhos) allocated_rhos = 1;
     }
 
-    TOTAL_RESISTANCE = 0.;
-    for (int i=0; i<N; ++i) TOTAL_RESISTANCE += Rs[i] + rhos[i];
-    TOTAL_RESISTANCE += Rs[N];
+    TOTAL_RESISTANCE = calloc(N, sizeof(double));
+    // store the pre- and post-tube resistance and the wire resistivity times its length
+    for (int i=0; i<N; ++i) TOTAL_RESISTANCE[i]= preRs[i] + rhos[i] * lengths[i] + postRs[i];
+    if (wires_in_series){
+       // with the wires in series we want the *total* of all tubes:
+       double actual_total = 0;
+       for (int i=0; i<N; ++i) actual_total += TOTAL_RESISTANCE[i];
+       for (int i=0; i<N; ++i) TOTAL_RESISTANCE[i] = actual_total;
+    }
 
     allocated_positions = 0;
     if (positions == NULL){
@@ -288,10 +330,12 @@ INITIALIZE
     }
     /* Check for intersecting tubes ... */
     int intersections = 0;
-    for (int i=0; i<N-1; ++i) {
+    if (check_for_intersections) {
+      for (int i=0; i<N-1; ++i) {
         for (int j=i+1; j<N; ++j){
           intersections += Detector_tubes_cylinders_intersect(radii[i], positions+3*i, ends+3*i, radii[j], positions+3*j, ends+3*j);
         }
+      }
     }
     if (intersections) {
       printf("Detector_tubes: %s: %d Intersecting PSD tube pairs!\n"
@@ -301,6 +345,10 @@ INITIALIZE
     
     double zero=0.;
     int zint=0;
+    STORE_CHARGE = 0;
+    STORE_TIME = 0;
+    STORE_WIRE = 0;
+    
     if(charge_a != 0 && charge_b != 0 && charge_a[0] != '\0' && charge_b[0] != '\0'){
     	if (particle_setvar_void(_particle, charge_a, (void *)&zint) || particle_setvar_void(_particle, charge_b, (void *)&zint)){
 	      printf("Detector_tubes: %s: Charge parameter(s) %s and/or %s do not exist!\nERROR. Exiting", 
@@ -316,6 +364,14 @@ INITIALIZE
         exit(-1);
       }
       STORE_TIME = 1;
+    }
+    if (tube_index_name != 0 && tube_index_name[0] != '\0'){
+        if (particle_setvar_void(_particle, tube_index_name, (void *)&zint)) {
+            printf("Detector_tubes: %s: Tube index parameter %s does not exist!\nERROR. Exiting",
+                   NAME_CURRENT_COMP, tube_index_name);
+            exit(-1);
+        }
+        STORE_WIRE = 1;
     }
 
   %}
@@ -342,62 +398,61 @@ TRACE
         double transmit_He3 = exp(-7.417 * He3_pressure * fabs(t1 - t0) * 2 * PI * K2V);
         p = p * (1 - transmit_He3);
       }
-      // even tubes have have their axis aligned with the continous wire, odd tubes are antialigned
-      int is_odd = intersects % 2;
       // re-use ty to store the absorption position along y
       // assume absorption takes place halfway between entrance and exit
-      ty = ty + (t0 + t1) * 0.5 * vy;
-      // convert ty to fractional position along the tube
-      if (is_odd) {
-          ty = 1 - (ty / lengths[intersects] + 0.5);
+      // and convert ty to fractional position along the tube
+      ty = 0.5 + (ty + 0.5 * (t0 + t1) * vy) / lengths[intersects];
+      // copy the y value in case the tubes are in series
+      double wy = ty;
+      if (ty < 0 || ty > 1) {
+          ABSORB;
       } else {
-          ty = ty / lengths[intersects] + 0.5;
-      }
-          
-      if ( ty < 0 || ty > 1) {
-        ABSORB;
-       // printf("FATAL ERROR: wrong relative linear position %f\n", ty);
-       // exit(1);
-      }
-      else {
-      // (possibly) modify the probability due to reduced counting efficiency near each tube end
-      if (dead_length > 0){
-        p = p * Detector_tubes_end_steps(ty, dead_length / lengths[intersects]);
-      }  
+          // (possibly) modify the probability due to reduced counting efficiency near each tube end
+          if (dead_length > 0){
+              p = p * Detector_tubes_end_steps(ty, dead_length / lengths[intersects]);
+          }
+          // in-series even tubes have have their axis aligned with the continous wire, odd tubes are antialigned
+          if (wires_in_series && intersects % 2) ty = 1 - ty;
+          // determine the linear pixel index -- this is possibly inverted
+          int linear = floor(no * ty);
+          if (wires_in_series && linear >= 0 && linear < no) {
+              // offset to the right position in the 1-D array
+              linear += intersects * no;
+              #pragma acc atomic
+              wire_N[linear] = wire_N[linear] + 1;
+              #pragma acc atomic
+              wire_p[linear] = wire_p[linear] + p;
+              #pragma acc atomic
+              wire_2[linear] = wire_2[linear] + p*p;
+          }
+          // find the y-pixel index in the 2-D array
+          int pixel = floor(no * wy);
+          if (pixel >= 0 && pixel < no){
+              #pragma acc atomic
+              pack_N[intersects][pixel] = pack_N[intersects][pixel] + 1;
+              #pragma acc atomic
+              pack_p[intersects][pixel] = pack_p[intersects][pixel] + p;
+              #pragma acc atomic
+              pack_2[intersects][pixel] = pack_2[intersects][pixel] + p*p;
+          }
+          // use ty to determine the right-end charge (how close ty is to 1)
+          // contact resistance
+          double res = 0;
+          if (wires_in_series) {
+              // add  all preceeding tube resistances
+              for (int q=0; q<intersects; ++q){
+                  res += preRs[q] + lengths[q] * rhos[q] + postRs[q];
+              }
+          }
+          // add this tube resistance
+          res += preRs[intersects] + ty * lengths[intersects] * rhos[intersects];
 
-      // determine the linear pixel index
-      int pixel = floor(no / 3 * ty) + intersects * floor(no / 3);
-
-      if ( pixel>=0 && pixel < no ){
-        #pragma acc atomic
-        detector_N[pixel]  = detector_N[pixel] + 1;
-        #pragma acc atomic
-        detector_p[pixel]  = detector_p[pixel] + p;
-        #pragma acc atomic
-        detector_p2[pixel] = detector_p2[pixel] + p*p;
+          // mimic the pulse-height spectrum used to set gamma discrimination
+          int pulse_height = threshold + (int)((levels - threshold) * rand01());
+          // store the simulated integral for both ends of the wire
+          right_charge = (int)(pulse_height * res / TOTAL_RESISTANCE[intersects]);
+          left_charge = pulse_height - right_charge;
       }
-      
-      // use ty to determine the right-end charge (how close ty is to 1)
-      // contact resistance 
-      double res = Rs[0];
-      // plus all preceeding tube resistances 
-      for (int q=0; q<intersects; ++q){
-          res += lengths[q] * rhos[q];
-      }
-      // plus this tube resistance
-      res += ty * lengths[intersects] * rhos[intersects];
-
-      // mimic the pulse-height spectrum used to set gamma discrimination
-      int pulse_height = threshold + (int)((levels - threshold) * rand01());
-      
-      right_charge = (int)(pulse_height * res / TOTAL_RESISTANCE);
-      left_charge = pulse_height - right_charge;
-      }
-    } else {
-      right_charge = -1;
-      left_charge = -1;
-      t0 = -2;
-      t1 = -1;
     }
     if (restore_neutron) {
       RESTORE_NEUTRON(INDEX_CURRENT_COMP, x, y, z, vx, vy, vz, t, sx, sy, sz, p);
@@ -409,7 +464,7 @@ TRACE
       }
     }
     if (STORE_CHARGE){
-    	printf("Charges (left, right) (%d, %d)\n", left_charge, right_charge);
+//    	printf("Charges (left, right) (%d, %d)\n", left_charge, right_charge);
     	particle_setvar_void(_particle, charge_a, (void *)&left_charge);
     	particle_setvar_void(_particle, charge_b, (void *)&right_charge);
     }
@@ -417,13 +472,22 @@ TRACE
       double avg_time = 0.5 * (t0 + t1);
       particle_setvar_void(_particle, detection_time, (void *)&avg_time);
     }
+    if (STORE_WIRE){
+        int wire_index = first_wire + wire_step * intersects;
+        particle_setvar_void(_particle, tube_index_name, (void *)&wire_index);
+    }
   %}
 
 SAVE
   %{
-    if (!nowritefile) {
+    if (wire_filename && wire_filename[0] != '\0' && wires_in_series) {
     DETECTOR_OUT_1D("Rastered multi-tube PSD monitor", "Channel number", "Intensity", "x",
-                    0, no, no, &detector_N[0], &detector_p[0], &detector_p2[0], filename);
+                    0, N*no, N*no, &wire_N[0], &wire_p[0], &wire_2[0], wire_filename);
+    }
+    if (pack_filename && pack_filename[0] != '\0') {
+    DETECTOR_OUT_2D("Multi-tube PSD monitor", "Tube index [1]", "Tube axis [1]",
+                    0, N-1, 0, 1,
+                    N, no, &pack_N[0][0], &pack_p[0][0], &pack_2[0][0], pack_filename);
     }
   %}
 
@@ -435,7 +499,8 @@ FINALLY
   if (allocated_positions && positions) free(positions);
   if (allocated_radii && radii) free(radii);
   if (allocated_rhos && rhos) free(rhos);
-  if (allocated_rs && Rs) free(Rs); 
+  if (allocated_prers && preRs) free(preRs);
+  if (allocated_postrs && postRs) free(postRs);
   if (allocated_ends && ends) free(ends);
 %}
 
