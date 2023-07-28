@@ -153,8 +153,8 @@ int Detector_tubes_cylinders_intersect(double r0, double * x0, double * e0, doub
     // as long as the vector between them is greater in length than r0 + r1 they can not intersect
     if (Detector_tubes_norm(vector) >= r0 + r1) return 0;
     // if they overlap perpendicular to their symmetry axis, do they overlap along it?
-    double distance = abs(Detector_tubes_dot(yh, x0) - Detector_tubes_dot(yh, x1));
-    double total_length = abs(Detector_tubes_dot(yh, e0) + Detector_tubes_dot(yh, e1));
+    double distance = fabs(Detector_tubes_dot(yh, x0) - Detector_tubes_dot(yh, x1));
+    double total_length = fabs(Detector_tubes_dot(yh, e0) + Detector_tubes_dot(yh, e1));
     return distance > total_length ? 0 : 1;
   }
   // Otherwise, is their perpendicular distance farther than their radii apart?
@@ -174,7 +174,7 @@ int Detector_tubes_cylinders_intersect(double r0, double * x0, double * e0, doub
   double s[4] = {1, -1, 1, -1};
   for (int q=0; q<4; ++q){
     for (int i=0; i<3; ++i) c[i] = x1[i] - x0[i] + f[q] * e1[i] + s[q]* r1 * r1h[i];
-    if (abs(Detector_tubes_dot(yh, c)) < abs(Detector_tubes_dot(yh, e0)) && abs(Detector_tubes_dot(zh, c)) < abs(r0)) return 1;
+    if (fabs(Detector_tubes_dot(yh, c)) < fabs(Detector_tubes_dot(yh, e0)) && fabs(Detector_tubes_dot(zh, c)) < fabs(r0)) return 1;
   }
   // no return means no intersection:
   return 0;
@@ -184,6 +184,7 @@ int Detector_tubes_cylinders_intersect(double r0, double * x0, double * e0, doub
 
 DECLARE
   %{
+    unsigned uN;
     double * TOTAL_RESISTANCE;
     int STORE_CHARGE;
     int STORE_TIME;
@@ -211,30 +212,33 @@ DECLARE
 
 INITIALIZE
   %{
+   uN = N < 0 ? 0u : (unsigned) N;
+   if (uN <= 0) printf("WARNING: Detector_tubes %s has no tubes (N=%d)!\n", NAME_CURRENT_COMP, N);
+
     if (wires_in_series){ 
-      wire_N = create_darr1d(N*no);
-      wire_p = create_darr1d(N*no);
-      wire_2 = create_darr1d(N*no);
+      wire_N = create_darr1d(uN*no);
+      wire_p = create_darr1d(uN*no);
+      wire_2 = create_darr1d(uN*no);
     }
-    pack_N = create_darr2d(N, no);
-    pack_p = create_darr2d(N, no);
-    pack_2 = create_darr2d(N, no);
+    pack_N = create_darr2d(uN, no);
+    pack_p = create_darr2d(uN, no);
+    pack_2 = create_darr2d(uN, no);
     
     /* Calculate orientation angles and lengths from tube-end positions */
-    lengths = calloc(N, sizeof(double));
-    xangles = calloc(N, sizeof(double));
-    zangles = calloc(N, sizeof(double));
+    lengths = calloc(uN, sizeof(double));
+    xangles = calloc(uN, sizeof(double));
+    zangles = calloc(uN, sizeof(double));
     allocated_ends = 0;
     if (ends == NULL) {
         // No centre-to-end vectors provided -- so take the scalar length for all tubes:
-        for (int i=0; i<N; ++i) {
+        for (unsigned i=0; i<uN; ++i) {
             lengths[i] = height;
             xangles[i] = 0.;
             zangles[i] = 0.;
         }
         // allocate the ends vectors so we can check for intersections
-        ends = calloc(3*N, sizeof(double));
-        for (int i=0; i<N; ++i) {
+        ends = calloc(3u*uN, sizeof(double));
+        for (unsigned i=0; i<uN; ++i) {
             ends[3*i+0] = 0;
             ends[3*i+1] = lengths[i] / 2;
             ends[3*i+2] = 0;
@@ -242,7 +246,7 @@ INITIALIZE
         allocated_ends = 1;
     } else {
         // ends is [x0, y0, z0, x1, y1, z1, ..., xN-1, yN-1, zN-1] packed center-to-end vectors
-        for (int i=0; i<N; ++i) {
+        for (unsigned i=0; i<uN; ++i) {
             lengths[i] = 2.0 * Detector_tubes_norm(ends + 3*i);
             xangles[i] = Detector_tubes_angle_x(ends + 3*i);
             zangles[i] = Detector_tubes_angle_z(ends + 3*i);
@@ -250,37 +254,37 @@ INITIALIZE
     }
     allocated_radii = 0;
     if (radii == NULL){
-        radii = calloc(N, sizeof(double));
-        for (int i=0; i<N; ++i) radii[i] = radius;
+        radii = calloc(uN, sizeof(double));
+        for (unsigned i=0; i<uN; ++i) radii[i] = radius;
         if (radii) allocated_radii = 1;
     }
     allocated_prers = 0;
     allocated_postrs = 0;
     if (preRs == NULL){
-        preRs = calloc(N, sizeof(double));
+        preRs = calloc(uN, sizeof(double));
         if (preRs) allocated_prers = 1;
         if (Rs == NULL) {
             preRs[0] = 0.;
-            for (int i=1; i<N; ++i){
+            for (unsigned i=1; i<uN; ++i){
                 preRs[i] = R/2;
             }
         } else {
             preRs[0] = Rs[0];
-            for (int i=1; i<N; ++i){
+            for (unsigned i=1; i<uN; ++i){
                 preRs[i] = Rs[i]/2;
             }
         }
     }
     if (postRs == NULL){
-        postRs = calloc(N, sizeof(double));
+        postRs = calloc(uN, sizeof(double));
         if (postRs) allocated_postrs = 1;
         if (Rs == NULL) {
-            for (int i=0; i<N-1; ++i){
+            for (unsigned i=0; i<uN-1; ++i){
                 postRs[i] = R/2;
             }
             postRs[N-1] = 0.;
         } else {
-            for (int i=0; i<N-1; ++i){
+            for (unsigned i=0; i<uN-1; ++i){
                 postRs[i] = Rs[i]/2;
             }
             postRs[N-1] = Rs[N-1];
@@ -288,34 +292,34 @@ INITIALIZE
     }
     allocated_rhos = 0;
     if (rhos == NULL){
-        rhos = calloc(N, sizeof(double));
-        for (int i=0; i<N; ++i) rhos[i] = rho;
+        rhos = calloc(uN, sizeof(double));
+        for (unsigned i=0; i<uN; ++i) rhos[i] = rho;
         if (rhos) allocated_rhos = 1;
     }
 
-    TOTAL_RESISTANCE = calloc(N, sizeof(double));
+    TOTAL_RESISTANCE = calloc(uN, sizeof(double));
     // store the pre- and post-tube resistance and the wire resistivity times its length
-    for (int i=0; i<N; ++i) TOTAL_RESISTANCE[i]= preRs[i] + rhos[i] * lengths[i] + postRs[i];
+    for (unsigned i=0; i<uN; ++i) TOTAL_RESISTANCE[i]= preRs[i] + rhos[i] * lengths[i] + postRs[i];
     if (wires_in_series){
        // with the wires in series we want the *total* of all tubes:
        double actual_total = 0;
-       for (int i=0; i<N; ++i) actual_total += TOTAL_RESISTANCE[i];
-       for (int i=0; i<N; ++i) TOTAL_RESISTANCE[i] = actual_total;
+       for (unsigned i=0; i<uN; ++i) actual_total += TOTAL_RESISTANCE[i];
+       for (unsigned i=0; i<uN; ++i) TOTAL_RESISTANCE[i] = actual_total;
     }
 
     allocated_positions = 0;
     if (positions == NULL){
         // Calculate every tube position:
-        positions = calloc(3*N, sizeof(double));
+        positions = calloc(3u*uN, sizeof(double));
         if (positions) allocated_positions = 1;
-        for (int i=0; i<3*N; ++i) positions[i] = 0.;
+        for (unsigned i=0; i<3u*uN; ++i) positions[i] = 0.;
         double tubes_width = width - radii[0] - radii[N-1];
         if (curvature != 0) {
             tubes_width = 2 * asin(tubes_width / (2 * curvature)); // switch from linear to angular width
         }
         double delta = N > 1 ? tubes_width / (N - 1) : 0.;
         if (curvature != 0){
-            for (int i=0; i<N; ++i) {
+            for (unsigned i=0; i<uN; ++i) {
                 double angle = i * delta - tubes_width / 2;
                 double cx = sin(angle) * curvature;
                 double cz = (cos(angle) - 1) * curvature;
@@ -323,7 +327,7 @@ INITIALIZE
                 positions[3*i+2] = cz;
             }
         } else {
-            for (int i=0; i<N; ++i) {
+            for (unsigned i=0; i<uN; ++i) {
                 positions[3*i + 0] = i * delta - tubes_width / 2;
             }
         }
@@ -331,7 +335,7 @@ INITIALIZE
     /* Check for intersecting tubes ... */
     int intersections = 0;
     if (check_for_intersections) {
-      for (int i=0; i<N-1; ++i) {
+      for (unsigned i=0; i<uN-1; ++i) {
         for (int j=i+1; j<N; ++j){
           intersections += Detector_tubes_cylinders_intersect(radii[i], positions+3*i, ends+3*i, radii[j], positions+3*j, ends+3*j);
         }
@@ -359,7 +363,7 @@ INITIALIZE
     }
     if (detection_time != 0 && detection_time[0] != '\0') {
       if (particle_setvar_void(_particle, detection_time, (void *)&zero)) {
-        printf("Detector_tubes: %s: Time paramter does not exist!\nERROR. Exiting",
+        printf("Detector_tubes: %s: Time paramter %s does not exist!\nERROR. Exiting",
                NAME_CURRENT_COMP, detection_time);
         exit(-1);
       }
@@ -385,7 +389,7 @@ TRACE
     int left_charge, right_charge;
 
     // Check all tubes in order for an intersection -- shortcut if found
-    for (int i=0; i<N; ++i){
+    for (unsigned i=0; i<uN; ++i){
         rot_set_rotation(rot, xangles[i], 0., zangles[i]);
         coords_get(rot_apply(rot, coords_set(x - positions[3*i+0], y - positions[3*i+1], z - positions[3*i+2])), &tx, &ty, &tz);
         coords_get(rot_apply(rot, coords_set(vx, vy, vz)), &tvx, &tvy, &tvz);
@@ -509,7 +513,7 @@ MCDISPLAY
   double rot[3][3];
   double ppz[3], pmz[3], mpz[3], mmz[3], zpp[3], zmp[3], zpm[3], zmm[3];
 
-  for (int i=0; i<N; ++i){
+  for (unsigned i=0; i<uN; ++i){
     rot_set_rotation(rot, xangles[i], 0., zangles[i]);
     coords_get(rot_apply(rot, coords_set( radii[i],  lengths[i]/2., 0.)), &ppz[0], &ppz[1], &ppz[2]);
     coords_get(rot_apply(rot, coords_set( radii[i], -lengths[i]/2., 0.)), &pmz[0], &pmz[1], &pmz[2]);
