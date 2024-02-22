@@ -1,0 +1,523 @@
+/*******************************************************************************
+*
+* McStas, neutron ray-tracing package
+*         Copyright 1997-2002, All rights reserved
+*         Risoe National Laboratory, Roskilde, Denmark
+*         Institut Laue Langevin, Grenoble, France
+*
+* %I
+* Written by:  Gregory Tucker
+* Date: 2024-02-22
+* Version: $Revision$
+* Origin: ESS
+* Release: McStas 3.
+*
+* Rastered serially connected linear PSD tubes, optionally recording (wire-position, time) histograms
+*
+* %D
+*
+* Example: Detector_time_tubes(N=3, no=20, tmin=100, tmax=300, dt=1, filename="Output.x", length=0.3, radius=0.025, width=0.1)
+*
+* %P
+* INPUT PARAMETERS:
+* N:               The number of serially connected tubes, default=1, must be positive definite [1]
+* first_wire:      The index of the first wire, for setting the neutron property TUBE properly. [1]
+* wire_step:       The difference in wire index between tube i and i+1 [1]
+* radius:          The common tube radius [m]
+* radii:           A pointer to a length-N array of doubles with per-tube radii [m]
+* positions:       A pointer to a length-3N array of doubles with the per-tube center of mass
+*                  relative to the local cooridnate sytem (z along beam, x horizontal, y vertical) [m]
+* ends:            A pointer to a length-3N array of doubles with the per-tube center-of-mass to
+*                  tube-end vector, used to determine the tube length and orientation [m]
+* height:          Defines the tube-length if ends is undefined. [m]
+* width:           Defines the tube positions if `positions` is undefined. Width is always the 
+                   full width of the tubes along x, even when the array is curved. [m]
+* curvature:       Radius of curvature of the tube-array in the (x,z) plane. [m]
+*                  Only used if positions is undefined, Positive (negative) values produce tubes which
+                   are at smaller (larger) z with increasing x.
+* no:              The number of bins per tube [1]
+* levels:          The number of charge-division levels [1]
+* threshold:       The minimum used level when simulating charge division [1]
+* Rs:              A length-N+1 array of inter-tube resistances, with first and last values giving contact resistances  [ohm]
+* preRs:           A length-N array of wire contact resistances, Rs takes precedence; if used in serial mode
+*                  the sum of the pre- and post-wire contact resistances is used *between* tubes. [ohm]
+* postRs:          A length-N array of wire contact resistances, Rs takes precedence; if used in serial mode
+*                  the sum of the pre- and post-wire contact resistances is used *between* tubes. [ohm]
+* R:               A constant resistance used for all inter-tube resistances if Rs is undefined. [ohm]
+*                  If used, the contact resistances are assumed to be zero.
+* rhos:            A length-N array of annode wire resitivities [ohm/m]
+* rho:             A single resistivity use for all annode wires if rhos is undefined. [ohm/m]
+* dead_length:     A characteristic length over which each tube loses sensitivity towards its end [m]
+* wire_filename:   Name of file in which to store the detector image [string]
+* tmin:            The minimum time to histogram in ms
+* tmax:            The maximum time to histogram in ms
+* dt:              The time histogram bin width in ms
+* He3_pressure:    If finite, apply a detector efficiency correction [bar]
+* charge_a:        The string name of the neutron property used to record one integrated voltage [str]
+* charge_b:        The string name of the neutron property used to record one integrated voltage [str]
+* detection_time:  The string name of the neutron property used to record event detection time [str]
+* tube_index_name: The string name of the neutron property used to record detecting wire readout [str]
+* restore_neutron: If set, the monitor does not influence the neutron state [1]
+*
+* 
+******************************************************************************/
+
+DEFINE COMPONENT Detector_time_tubes
+DEFINITION PARAMETERS ()
+  SETTING PARAMETERS (int N=1, int first_wire=0, int wire_step=1,
+    int no=100, string wire_filename=0, int levels=4096, int threshold=400,
+    tmin=0, tmax=1000, dt=10,
+    width=0, height=0,
+    radius=0, R=0, rho=5511.81, dead_length=0.0254,
+    curvature = 0,
+    vector radii = NULL,
+    vector Rs = NULL,
+    vector preRs = NULL,
+    vector postRs = NULL,
+    vector rhos = NULL,
+    vector positions = NULL,
+    vector ends = NULL,
+    He3_pressure=0,
+    string charge_a=0, string charge_b=0, string detection_time=0, string tube_index_name=0,
+    int restore_neutron=0, int check_for_intersections=1)
+OUTPUT PARAMETERS (wire_N, wire_p, wire_2)
+/* Neutron parameters: (x,y,z,vx,vy,vz,t,sx,sy,sz,p) */
+
+SHARE %{
+#include <math.h>
+
+/* Vector cross product */
+void Detector_tubes_cross(double * x, double * y, double * z){
+  z[2] = x[0] * y[1] - x[1] * y[0];
+  z[1] = x[2] * y[0] - x[0] * y[2];
+  z[0] = x[1] * y[2] - x[2] * y[1];
+}
+
+/* Vector dot product */
+double Detector_tubes_dot(double * x, double * y){
+  return x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
+}
+
+/* Vector length */
+double Detector_tubes_norm(double * x){
+  return sqrt(Detector_tubes_dot(x, x));
+}
+
+/* Create unit vector */
+void Detector_tubes_hat(double * x, double* h){
+  double l = Detector_tubes_norm(x);
+  h[0] = x[0]/l;
+  h[1] = x[1]/l;
+  h[2] = x[2]/l;
+}
+
+/* Angle between [0,0,1] and vector */
+double Detector_tubes_angle_z(double * v){
+  double h[3];
+  Detector_tubes_hat(v, h);
+  return atan2(h[0], h[1]);
+}
+
+/* Angle between [1,0,0] and vector */
+double Detector_tubes_angle_x(double * v){
+  double h[3];
+  Detector_tubes_hat(v, h);
+  return atan2(h[2], h[1]);
+}
+
+/* Smooth step function for use in tube-end efficiency reduction */
+double Detector_tubes_step(double a, double b, double x){
+  x = (x < a) ? 0 : (x > b) ? 1 : (x-a)/(b-a);
+  // 6*x^5 - 15*x^4 + 10*x^3 <-- has zero first and second derivatives at 0 and 1
+  return ((6 * x - 15) * x + 10) * x * x * x;  
+}
+
+/* Reduce the detector efficiency at each end */
+double Detector_tubes_end_steps(double x, double xi){
+  return Detector_tubes_step(0, xi, x) + Detector_tubes_step(0, xi, 1-x) - 1.;
+}
+
+/* Check if there is an intersection between two cylinders */
+int Detector_tubes_cylinders_intersect(double r0, double * x0, double * e0, double r1, double * x1, double * e1) {
+  double vector[3];
+  double normal[3];
+  double yh[3];
+  
+  // what is the vector from one cylinder to the other?
+  for (int i=0; i<3; ++i) vector[i] = x0[i] - x1[i];
+  // start defining a coordinate system -- direction perpendicular to both symmetry axes:
+  Detector_tubes_cross(e0, e1, normal);
+  double normal_len = Detector_tubes_norm(normal);
+  // direction along the first symmetry axis
+  Detector_tubes_hat(e0, yh);
+  // Are the two cylinders are parallel?
+  if (normal_len == 0) {
+    // as long as the vector between them is greater in length than r0 + r1 they can not intersect
+    if (Detector_tubes_norm(vector) >= r0 + r1) return 0;
+    // if they overlap perpendicular to their symmetry axis, do they overlap along it?
+    double distance = fabs(Detector_tubes_dot(yh, x0) - Detector_tubes_dot(yh, x1));
+    double total_length = fabs(Detector_tubes_dot(yh, e0) + Detector_tubes_dot(yh, e1));
+    return distance > total_length ? 0 : 1;
+  }
+  // Otherwise, is their perpendicular distance farther than their radii apart?
+  double xh[3];
+  for (int i=0; i<3; ++i) xh[i] = normal[i] / normal_len;
+  if (Detector_tubes_dot(xh, vector) >= r0 + r1) return 0;
+  // The overlap can be determined by projecting into the (y,z) plane and looking at the extreme points:
+  double zh[3];
+  Detector_tubes_cross(xh, yh, zh);
+  double e1h[3];
+  Detector_tubes_hat(e1, e1h);
+  double r1h[3];
+  Detector_tubes_cross(e1h, xh, r1h);
+  // four cases to consider x1 +/- e1 +/- r1 * r1h:
+  double c[3];
+  double f[4] = {1, 1, -1, -1};
+  double s[4] = {1, -1, 1, -1};
+  for (int q=0; q<4; ++q){
+    for (int i=0; i<3; ++i) c[i] = x1[i] - x0[i] + f[q] * e1[i] + s[q]* r1 * r1h[i];
+    if (fabs(Detector_tubes_dot(yh, c)) < fabs(Detector_tubes_dot(yh, e0)) && fabs(Detector_tubes_dot(zh, c)) < fabs(r0)) return 1;
+  }
+  // no return means no intersection:
+  return 0;
+}
+
+%}
+
+DECLARE
+  %{
+    unsigned uN;
+    double * TOTAL_RESISTANCE;
+    int STORE_CHARGE;
+    int STORE_TIME;
+    int STORE_WIRE;
+    
+    int no_time;
+    
+    DArray2d wire_N;
+    DArray2d wire_p;
+    DArray2d wire_2;
+        
+    // cylinder position & orientation parameters
+    double * xangles;
+    double * zangles;
+    double * lengths;
+    int allocated_positions;
+    int allocated_radii;
+    int allocated_rhos;
+    int allocated_prers;
+    int allocated_postrs;
+    int allocated_ends;
+  %}
+
+INITIALIZE
+  %{
+    uN = N < 0 ? 0u : (unsigned) N;
+    if (uN <= 0) printf("WARNING: Detector_tubes %s has no tubes (N=%d)!\n", NAME_CURRENT_COMP, N);
+   
+    no_time = (tmax - tmin) <= dt ? 1 : (int)((tmax - tmin) / dt);
+
+    wire_N = create_darr2d(uN*no, no_time);
+    wire_p = create_darr2d(uN*no, no_time);
+    wire_2 = create_darr2d(uN*no, no_time);
+
+    /* Calculate orientation angles and lengths from tube-end positions */
+    lengths = calloc(uN, sizeof(double));
+    xangles = calloc(uN, sizeof(double));
+    zangles = calloc(uN, sizeof(double));
+    allocated_ends = 0;
+    if (ends == NULL) {
+        // No centre-to-end vectors provided -- so take the scalar length for all tubes:
+        for (unsigned i=0; i<uN; ++i) {
+            lengths[i] = height;
+            xangles[i] = 0.;
+            zangles[i] = 0.;
+        }
+        // allocate the ends vectors so we can check for intersections
+        ends = calloc(3u*uN, sizeof(double));
+        for (unsigned i=0; i<uN; ++i) {
+            ends[3*i+0] = 0;
+            ends[3*i+1] = lengths[i] / 2;
+            ends[3*i+2] = 0;
+        }
+        allocated_ends = 1;
+    } else {
+        // ends is [x0, y0, z0, x1, y1, z1, ..., xN-1, yN-1, zN-1] packed center-to-end vectors
+        for (unsigned i=0; i<uN; ++i) {
+            lengths[i] = 2.0 * Detector_tubes_norm(ends + 3*i);
+            xangles[i] = Detector_tubes_angle_x(ends + 3*i);
+            zangles[i] = Detector_tubes_angle_z(ends + 3*i);
+        }
+    }
+    allocated_radii = 0;
+    if (radii == NULL){
+        radii = calloc(uN, sizeof(double));
+        for (unsigned i=0; i<uN; ++i) radii[i] = radius;
+        if (radii) allocated_radii = 1;
+    }
+    allocated_prers = 0;
+    allocated_postrs = 0;
+    if (preRs == NULL){
+        preRs = calloc(uN, sizeof(double));
+        if (preRs) allocated_prers = 1;
+        if (Rs == NULL) {
+            preRs[0] = 0.;
+            for (unsigned i=1; i<uN; ++i){
+                preRs[i] = R/2;
+            }
+        } else {
+            preRs[0] = Rs[0];
+            for (unsigned i=1; i<uN; ++i){
+                preRs[i] = Rs[i]/2;
+            }
+        }
+    }
+    if (postRs == NULL){
+        postRs = calloc(uN, sizeof(double));
+        if (postRs) allocated_postrs = 1;
+        if (Rs == NULL) {
+            for (unsigned i=0; i<uN-1; ++i){
+                postRs[i] = R/2;
+            }
+            postRs[N-1] = 0.;
+        } else {
+            for (unsigned i=0; i<uN-1; ++i){
+                postRs[i] = Rs[i]/2;
+            }
+            postRs[N-1] = Rs[N-1];
+        }
+    }
+    allocated_rhos = 0;
+    if (rhos == NULL){
+        rhos = calloc(uN, sizeof(double));
+        for (unsigned i=0; i<uN; ++i) rhos[i] = rho;
+        if (rhos) allocated_rhos = 1;
+    }
+
+    TOTAL_RESISTANCE = calloc(uN, sizeof(double));
+    // store the pre- and post-tube resistance and the wire resistivity times its length
+    for (unsigned i=0; i<uN; ++i) TOTAL_RESISTANCE[i]= preRs[i] + rhos[i] * lengths[i] + postRs[i];
+
+    // with the wires in series we want the *total* of all tubes:
+    double actual_total = 0;
+    for (unsigned i=0; i<uN; ++i) actual_total += TOTAL_RESISTANCE[i];
+    for (unsigned i=0; i<uN; ++i) TOTAL_RESISTANCE[i] = actual_total;
+
+    allocated_positions = 0;
+    if (positions == NULL){
+        // Calculate every tube position:
+        positions = calloc(3u*uN, sizeof(double));
+        if (positions) allocated_positions = 1;
+        for (unsigned i=0; i<3u*uN; ++i) positions[i] = 0.;
+        double tubes_width = width - radii[0] - radii[N-1];
+        if (curvature != 0) {
+            tubes_width = 2 * asin(tubes_width / (2 * curvature)); // switch from linear to angular width
+        }
+        double delta = N > 1 ? tubes_width / (N - 1) : 0.;
+        if (curvature != 0){
+            for (unsigned i=0; i<uN; ++i) {
+                double angle = i * delta - tubes_width / 2;
+                double cx = sin(angle) * curvature;
+                double cz = (cos(angle) - 1) * curvature;
+                positions[3*i+0] = cx;
+                positions[3*i+2] = cz;
+            }
+        } else {
+            for (unsigned i=0; i<uN; ++i) {
+                positions[3*i + 0] = i * delta - tubes_width / 2;
+            }
+        }
+    }
+    /* Check for intersecting tubes ... */
+    int intersections = 0;
+    if (check_for_intersections) {
+      for (unsigned i=0; i<uN-1; ++i) {
+        for (int j=i+1; j<N; ++j){
+          intersections += Detector_tubes_cylinders_intersect(radii[i], positions+3*i, ends+3*i, radii[j], positions+3*j, ends+3*j);
+        }
+      }
+    }
+    if (intersections) {
+      printf("Detector_tubes: %s: %d Intersecting PSD tube pairs!\n"
+             "ERROR. Exiting", NAME_CURRENT_COMP, intersections);
+      exit(-1);
+    }
+    
+    double zero=0.;
+    int zint=0;
+    STORE_CHARGE = 0;
+    STORE_TIME = 0;
+    STORE_WIRE = 0;
+    
+    if(charge_a != 0 && charge_b != 0 && charge_a[0] != '\0' && charge_b[0] != '\0'){
+    	if (particle_setvar_void(_particle, charge_a, (void *)&zint) || particle_setvar_void(_particle, charge_b, (void *)&zint)){
+	      printf("Detector_tubes: %s: Charge parameter(s) %s and/or %s do not exist!\nERROR. Exiting", 
+               NAME_CURRENT_COMP, charge_a, charge_b);
+        exit(-1);
+    	}
+    	STORE_CHARGE = 1;
+    }
+    if (detection_time != 0 && detection_time[0] != '\0') {
+      if (particle_setvar_void(_particle, detection_time, (void *)&zero)) {
+        printf("Detector_tubes: %s: Time paramter %s does not exist!\nERROR. Exiting",
+               NAME_CURRENT_COMP, detection_time);
+        exit(-1);
+      }
+      STORE_TIME = 1;
+    }
+    if (tube_index_name != 0 && tube_index_name[0] != '\0'){
+        if (particle_setvar_void(_particle, tube_index_name, (void *)&zint)) {
+            printf("Detector_tubes: %s: Tube index parameter %s does not exist!\nERROR. Exiting",
+                   NAME_CURRENT_COMP, tube_index_name);
+            exit(-1);
+        }
+        STORE_WIRE = 1;
+    }
+
+  %}
+
+TRACE
+  %{
+    double tx, ty, tz, tvx, tvy, tvz;
+    double t0, t1, tabs;
+    double rot[3][3];
+    int intersects=-1;
+    int left_charge, right_charge;
+
+    // Check all tubes in order for an intersection -- shortcut if found
+    for (unsigned i=0; i<uN; ++i){
+        rot_set_rotation(rot, xangles[i], 0., zangles[i]);
+        coords_get(rot_apply(rot, coords_set(x - positions[3*i+0], y - positions[3*i+1], z - positions[3*i+2])), &tx, &ty, &tz);
+        coords_get(rot_apply(rot, coords_set(vx, vy, vz)), &tvx, &tvy, &tvz);
+        if (cylinder_intersect(&t0, &t1, tx, ty, tz, tvx, tvy, tvz, radii[i], lengths[i])) intersects = i;
+        if (intersects > -1) break;
+    }
+    if (intersects > -1){
+      // (possibly) modify the probability due to He3 transmission
+      if (He3_pressure > 0 && t1 != t0){
+        double transmit_He3 = exp(-7.417 * He3_pressure * fabs(t1 - t0) * 2 * PI * K2V);
+        p = p * (1 - transmit_He3);
+      }
+      // re-use ty to store the absorption position along y
+      // assume absorption takes place halfway between entrance and exit
+      // and convert ty to fractional position along the tube
+      ty = 0.5 + (ty + 0.5 * (t0 + t1) * vy) / lengths[intersects];
+      // copy the y value in case the tubes are in series
+      double wy = ty;
+      if (ty < 0 || ty > 1) {
+          ABSORB;
+      } else {
+          int tindex = floor(((t0 + t1)/2.0 + t - tmin) / dt);
+          // (possibly) modify the probability due to reduced counting efficiency near each tube end
+          if (dead_length > 0){
+              p = p * Detector_tubes_end_steps(ty, dead_length / lengths[intersects]);
+          }
+          // in-series even tubes have have their axis aligned with the continous wire, odd tubes are antialigned
+          if (intersects % 2) ty = 1 - ty;
+          // determine the linear pixel index -- this is possibly inverted
+          int linear = floor(no * ty);
+          if (linear >= 0 && linear < no && tindex >= 0 && tindex < no_time) {
+              // offset to the right position in the 1-D array
+              linear += intersects * no;
+              #pragma acc atomic
+              wire_N[linear][tindex] = wire_N[linear][tindex] + 1;
+              #pragma acc atomic
+              wire_p[linear][tindex] = wire_p[linear][tindex] + p;
+              #pragma acc atomic
+              wire_2[linear][tindex] = wire_2[linear][tindex] + p*p;
+          }
+          // use ty to determine the right-end charge (how close ty is to 1)
+          // contact resistance
+          double res = 0;
+          // add  all preceeding tube resistances
+          for (int q=0; q<intersects; ++q){
+             res += preRs[q] + lengths[q] * rhos[q] + postRs[q];
+          }
+          // add this tube resistance
+          res += preRs[intersects] + ty * lengths[intersects] * rhos[intersects];
+
+          // mimic the pulse-height spectrum used to set gamma discrimination
+          int pulse_height = threshold + (int)((levels - threshold) * rand01());
+          // store the simulated integral for both ends of the wire
+          right_charge = (int)(pulse_height * res / TOTAL_RESISTANCE[intersects]);
+          left_charge = pulse_height - right_charge;
+      }
+    }
+    if (restore_neutron) {
+      RESTORE_NEUTRON(INDEX_CURRENT_COMP, x, y, z, vx, vy, vz, t, sx, sy, sz, p);
+    } else {
+      if (intersects > -1) {
+      	SCATTER;
+      } else {
+      	ABSORB;
+      }
+    }
+    if (STORE_CHARGE){
+    	particle_setvar_void(_particle, charge_a, (void *)&left_charge);
+    	particle_setvar_void(_particle, charge_b, (void *)&right_charge);
+    }
+    if (STORE_TIME){
+      double avg_time = 0.5 * (t0 + t1);
+      particle_setvar_void(_particle, detection_time, (void *)&avg_time);
+    }
+    if (STORE_WIRE){
+        int wire_index = first_wire + wire_step * intersects;
+        particle_setvar_void(_particle, tube_index_name, (void *)&wire_index);
+    }
+  %}
+
+SAVE
+  %{
+    if (wire_filename && wire_filename[0] != '\0') {
+    DETECTOR_OUT_2D("Rastered multi-tube PSD monitor", "Channel number", "Time [ms]", "Intensity", "x",
+                    0, N*no, tmin, tmax, N*no, no_time, &wire_N[0][0], &wire_p[0][0], &wire_2[0][0], wire_filename);
+    }
+  %}
+
+FINALLY
+%{
+  if (lengths) free(lengths);
+  if (xangles) free(xangles);
+  if (zangles) free(zangles);
+  if (allocated_positions && positions) free(positions);
+  if (allocated_radii && radii) free(radii);
+  if (allocated_rhos && rhos) free(rhos);
+  if (allocated_prers && preRs) free(preRs);
+  if (allocated_postrs && postRs) free(postRs);
+  if (allocated_ends && ends) free(ends);
+%}
+
+MCDISPLAY
+%{
+  double rot[3][3];
+  double ppz[3], pmz[3], mpz[3], mmz[3], zpp[3], zmp[3], zpm[3], zmm[3];
+
+  for (unsigned i=0; i<uN; ++i){
+    rot_set_rotation(rot, xangles[i], 0., zangles[i]);
+    coords_get(rot_apply(rot, coords_set( radii[i],  lengths[i]/2., 0.)), &ppz[0], &ppz[1], &ppz[2]);
+    coords_get(rot_apply(rot, coords_set( radii[i], -lengths[i]/2., 0.)), &pmz[0], &pmz[1], &pmz[2]);
+    coords_get(rot_apply(rot, coords_set(-radii[i],  lengths[i]/2., 0.)), &mpz[0], &mpz[1], &mpz[2]);
+    coords_get(rot_apply(rot, coords_set(-radii[i], -lengths[i]/2., 0.)), &mmz[0], &mmz[1], &mmz[2]);
+
+    coords_get(rot_apply(rot, coords_set(0.,  lengths[i]/2., radii[i])), &zpp[0], &zpp[1], &zpp[2]);
+    coords_get(rot_apply(rot, coords_set(0., -lengths[i]/2., radii[i])), &zmp[0], &zmp[1], &zmp[2]);
+    coords_get(rot_apply(rot, coords_set(0.,  lengths[i]/2.,-radii[i])), &zpm[0], &zpm[1], &zpm[2]);
+    coords_get(rot_apply(rot, coords_set(0., -lengths[i]/2.,-radii[i])), &zmm[0], &zmm[1], &zmm[2]);
+
+    multiline(5, 
+              positions[3*i+0] + mmz[0], positions[3*i+1] + mmz[1], positions[3*i+2] + mmz[2],
+              positions[3*i+0] + pmz[0], positions[3*i+1] + pmz[1], positions[3*i+2] + pmz[2],
+              positions[3*i+0] + ppz[0], positions[3*i+1] + ppz[1], positions[3*i+2] + ppz[2],
+              positions[3*i+0] + mpz[0], positions[3*i+1] + mpz[1], positions[3*i+2] + mpz[2],
+              positions[3*i+0] + mmz[0], positions[3*i+1] + mmz[1], positions[3*i+2] + mmz[2]);
+    multiline(5, 
+              positions[3*i+0] + zmm[0], positions[3*i+1] + zmm[1], positions[3*i+2] + zmm[2],
+              positions[3*i+0] + zpm[0], positions[3*i+1] + zpm[1], positions[3*i+2] + zpm[2],
+              positions[3*i+0] + zpp[0], positions[3*i+1] + zpp[1], positions[3*i+2] + zpp[2],
+              positions[3*i+0] + zmp[0], positions[3*i+1] + zmp[1], positions[3*i+2] + zmp[2],
+              positions[3*i+0] + zmm[0], positions[3*i+1] + zmm[1], positions[3*i+2] + zmm[2]);
+  }
+
+%}
+
+END
