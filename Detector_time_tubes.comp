@@ -407,7 +407,8 @@ TRACE
       if (ty < 0 || ty > 1) {
           ABSORB;
       } else {
-          int tindex = floor(((t0 + t1)/2.0 + t - tmin) / dt);
+          tabs = 1000. * ((t0 + t1)/2.0 + t); // absorption time in milliseconds
+          int tindex = floor((tabs - tmin) / dt); // but tmin, dt are in milliseconds!
           // (possibly) modify the probability due to reduced counting efficiency near each tube end
           if (dead_length > 0){
               p = p * Detector_tubes_end_steps(ty, dead_length / lengths[intersects]);
@@ -457,7 +458,7 @@ TRACE
     	particle_setvar_void(_particle, charge_b, (void *)&right_charge);
     }
     if (STORE_TIME){
-      double avg_time = 0.5 * (t0 + t1);
+      double avg_time = 0.5 * (t0 + t1) + t;  // don't forget the input time!
       particle_setvar_void(_particle, detection_time, (void *)&avg_time);
     }
     if (STORE_WIRE){
@@ -469,7 +470,7 @@ TRACE
 SAVE
   %{
     if (wire_filename && wire_filename[0] != '\0') {
-    DETECTOR_OUT_2D("Rastered multi-tube PSD monitor", "Channel number", "Time [ms]", "Intensity", "x",
+    DETECTOR_OUT_2D("Rastered multi-tube PSD monitor", "Channel number", "Time [ms]",
                     0, N*no, tmin, tmax, N*no, no_time, &wire_N[0][0], &wire_p[0][0], &wire_2[0][0], wire_filename);
     }
   %}

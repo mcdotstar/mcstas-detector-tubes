@@ -473,7 +473,7 @@ TRACE
     	particle_setvar_void(_particle, charge_b, (void *)&right_charge);
     }
     if (STORE_TIME){
-      double avg_time = 0.5 * (t0 + t1);
+      double avg_time = 0.5 * (t0 + t1) + t;  // Don't forget the time taken to arrive here!
       particle_setvar_void(_particle, detection_time, (void *)&avg_time);
     }
     if (STORE_WIRE){
