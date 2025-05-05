@@ -102,7 +102,7 @@ def detector_tubes():
 def test_detector_tubes():
     from numpy import sum, std, abs
     lines, files = detector_tubes()
-    print(lines)
+
     assert 'wire' in files
     assert 'pack' in files
     assert 'division' in files

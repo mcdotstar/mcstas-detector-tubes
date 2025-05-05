@@ -11,7 +11,7 @@ jobs:
   test:
     name: Test the component(s) with Pytest
     runs-on: ${{ matrix.platform }}
-    strategey:
+    strategy:
       fail-fast: false
       matrix:
         platform: [windows-latest, macos-latest, ubuntu-latest]
