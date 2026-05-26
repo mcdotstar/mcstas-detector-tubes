@@ -454,7 +454,8 @@ TRACE
           // mimic the pulse-height spectrum used to set gamma discrimination
           int pulse_height = threshold + (int)((levels - threshold) * rand01());
           // store the simulated integral for both ends of the wire
-          right_charge = (int)(pulse_height * res / TOTAL_RESISTANCE[intersects]);
+//          right_charge = (int)(pulse_height * res / TOTAL_RESISTANCE[intersects]);
+	  right_charge = (int)((double) pulse_height * (res / TOTAL_RESISTANCE[intersects]));
           left_charge = pulse_height - right_charge;
       }
     }
@@ -511,8 +512,8 @@ FINALLY
 MCDISPLAY
 %{
   double rot[3][3];
+  /*
   double ppz[3], pmz[3], mpz[3], mmz[3], zpp[3], zmp[3], zpm[3], zmm[3];
-
   for (unsigned i=0; i<uN; ++i){
     rot_set_rotation(rot, xangles[i], 0., zangles[i]);
     coords_get(rot_apply(rot, coords_set( radii[i],  lengths[i]/2., 0.)), &ppz[0], &ppz[1], &ppz[2]);
@@ -538,7 +539,13 @@ MCDISPLAY
               positions[3*i+0] + zmp[0], positions[3*i+1] + zmp[1], positions[3*i+2] + zmp[2],
               positions[3*i+0] + zmm[0], positions[3*i+1] + zmm[1], positions[3*i+2] + zmm[2]);
   }
-
+  */
+  double nx, ny, nz;
+  for (unsigned i=0; i<uN; ++i){
+    rot_set_rotation(rot, xangles[i], 0., zangles[i]);
+    coords_get(rot_apply(rot, coords_set(0.0, 1.0, 0.0)), &nx, &ny, &nz);
+    cylinder(positions[3*i], positions[3*i+1], positions[3*i+2], radii[i], lengths[i], 0., nx, ny, nz);  
+  }
 %}
 
 END
