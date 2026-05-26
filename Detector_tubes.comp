@@ -12,7 +12,9 @@
 * Origin: ESS
 * Release: McStas 3.
 *
-* Rastered serially connected linear PSD tubes
+* Linear PSD 3He tubes forming a pack, optionally connected serially.
+* The point of detection is used to set relevant readout electronic 
+* properties for use with simulated data acquisition pipelines.
 *
 * %D
 *
@@ -20,7 +22,7 @@
 *
 * %P
 * INPUT PARAMETERS:
-* N:               The number of serially connected tubes, default=1, must be positive definite [1]
+* N:               The number of tubes in the pack, default=1, must be positive definite [1]
 * wires_in_series: If non-zero, the tubes have all wires connected in series [1]
 * first_wire:      The index of the first wire, for setting the neutron property TUBE properly. [1]
 * wire_step:       The difference in wire index between tube i and i+1 [1]
@@ -49,14 +51,15 @@
 * rhos:            A length-N array of annode wire resitivities [ohm/m]
 * rho:             A single resistivity use for all annode wires if rhos is undefined. [ohm/m]
 * dead_length:     A characteristic length over which each tube loses sensitivity towards its end [m]
-* wire_filename:        Name of file in which to store the detector image [string]
-* pack_filename:
+* wire_filename:   Name of file in which to store the wire histogram [str]
+* pack_filename:   Name of file in which to store the pack 2-D histogram [str]
 * He3_pressure:    If finite, apply a detector efficiency correction [bar]
 * charge_a:        The string name of the neutron property used to record one integrated voltage [str]
 * charge_b:        The string name of the neutron property used to record one integrated voltage [str]
 * detection_time:  The string name of the neutron property used to record event detection time [str]
 * tube_index_name: The string name of the neutron property used to record detecting wire readout [str]
 * restore_neutron: If set, the monitor does not influence the neutron state [1]
+* annotate:        If non-zero (default), draw readout wires, inter-tube resistors, and A/B labels [1]
 *
 * 
 ******************************************************************************/
@@ -77,7 +80,7 @@ DEFINITION PARAMETERS ()
     vector ends = NULL,
     He3_pressure=0,
     string charge_a=0, string charge_b=0, string detection_time=0, string tube_index_name=0,
-    int restore_neutron=0, int check_for_intersections=1)
+    int restore_neutron=0, int check_for_intersections=1, int annotate=1)
 OUTPUT PARAMETERS (wire_N, wire_p, wire_2)
 /* Neutron parameters: (x,y,z,vx,vy,vz,t,sx,sy,sz,p) */
 
@@ -454,7 +457,6 @@ TRACE
           // mimic the pulse-height spectrum used to set gamma discrimination
           int pulse_height = threshold + (int)((levels - threshold) * rand01());
           // store the simulated integral for both ends of the wire
-//          right_charge = (int)(pulse_height * res / TOTAL_RESISTANCE[intersects]);
 	  right_charge = (int)((double) pulse_height * (res / TOTAL_RESISTANCE[intersects]));
           left_charge = pulse_height - right_charge;
       }
@@ -469,7 +471,6 @@ TRACE
       }
     }
     if (STORE_CHARGE){
-//    	printf("Charges (left, right) (%d, %d)\n", left_charge, right_charge);
     	particle_setvar_void(_particle, charge_a, (void *)&left_charge);
     	particle_setvar_void(_particle, charge_b, (void *)&right_charge);
     }
@@ -512,39 +513,138 @@ FINALLY
 MCDISPLAY
 %{
   double rot[3][3];
-  /*
-  double ppz[3], pmz[3], mpz[3], mmz[3], zpp[3], zmp[3], zpm[3], zmm[3];
-  for (unsigned i=0; i<uN; ++i){
-    rot_set_rotation(rot, xangles[i], 0., zangles[i]);
-    coords_get(rot_apply(rot, coords_set( radii[i],  lengths[i]/2., 0.)), &ppz[0], &ppz[1], &ppz[2]);
-    coords_get(rot_apply(rot, coords_set( radii[i], -lengths[i]/2., 0.)), &pmz[0], &pmz[1], &pmz[2]);
-    coords_get(rot_apply(rot, coords_set(-radii[i],  lengths[i]/2., 0.)), &mpz[0], &mpz[1], &mpz[2]);
-    coords_get(rot_apply(rot, coords_set(-radii[i], -lengths[i]/2., 0.)), &mmz[0], &mmz[1], &mmz[2]);
-
-    coords_get(rot_apply(rot, coords_set(0.,  lengths[i]/2., radii[i])), &zpp[0], &zpp[1], &zpp[2]);
-    coords_get(rot_apply(rot, coords_set(0., -lengths[i]/2., radii[i])), &zmp[0], &zmp[1], &zmp[2]);
-    coords_get(rot_apply(rot, coords_set(0.,  lengths[i]/2.,-radii[i])), &zpm[0], &zpm[1], &zpm[2]);
-    coords_get(rot_apply(rot, coords_set(0., -lengths[i]/2.,-radii[i])), &zmm[0], &zmm[1], &zmm[2]);
-
-    multiline(5, 
-              positions[3*i+0] + mmz[0], positions[3*i+1] + mmz[1], positions[3*i+2] + mmz[2],
-              positions[3*i+0] + pmz[0], positions[3*i+1] + pmz[1], positions[3*i+2] + pmz[2],
-              positions[3*i+0] + ppz[0], positions[3*i+1] + ppz[1], positions[3*i+2] + ppz[2],
-              positions[3*i+0] + mpz[0], positions[3*i+1] + mpz[1], positions[3*i+2] + mpz[2],
-              positions[3*i+0] + mmz[0], positions[3*i+1] + mmz[1], positions[3*i+2] + mmz[2]);
-    multiline(5, 
-              positions[3*i+0] + zmm[0], positions[3*i+1] + zmm[1], positions[3*i+2] + zmm[2],
-              positions[3*i+0] + zpm[0], positions[3*i+1] + zpm[1], positions[3*i+2] + zpm[2],
-              positions[3*i+0] + zpp[0], positions[3*i+1] + zpp[1], positions[3*i+2] + zpp[2],
-              positions[3*i+0] + zmp[0], positions[3*i+1] + zmp[1], positions[3*i+2] + zmp[2],
-              positions[3*i+0] + zmm[0], positions[3*i+1] + zmm[1], positions[3*i+2] + zmm[2]);
-  }
-  */
   double nx, ny, nz;
+
+  /* Tube cylinders */
   for (unsigned i=0; i<uN; ++i){
     rot_set_rotation(rot, xangles[i], 0., zangles[i]);
     coords_get(rot_apply(rot, coords_set(0.0, 1.0, 0.0)), &nx, &ny, &nz);
-    cylinder(positions[3*i], positions[3*i+1], positions[3*i+2], radii[i], lengths[i], 0., nx, ny, nz);  
+    cylinder(positions[3*i], positions[3*i+1], positions[3*i+2], radii[i], lengths[i], 0., nx, ny, nz);
+  }
+
+  if (annotate) {
+    double * scales = (double *)calloc(uN, sizeof(double));
+    for (unsigned i=0; i<uN; ++i) scales[i] = (lengths[i] > 0) ? 2.0 * radii[i] / lengths[i] : 0.;
+    /* Central readout wires: line from the -ends tip to the +ends tip of each tube,
+     * extended 0.01 m beyond each cap along the tube axis to meet the resistor endpoints. */
+    for (unsigned i=0; i<uN; ++i){
+      double ex = ends[3*i+0] + scales[i]*ends[3*i+0];
+      double ey = ends[3*i+1] + scales[i]*ends[3*i+1];
+      double ez = ends[3*i+2] + scales[i]*ends[3*i+2];
+      line(positions[3*i+0] - ex, positions[3*i+1] - ey, positions[3*i+2] - ez,
+           positions[3*i+0] + ex, positions[3*i+1] + ey, positions[3*i+2] + ez);
+    }
+
+    if (wires_in_series && uN > 1) {
+      /* Resistors between consecutive tubes drawn as zigzag lines, offset 0.01 m beyond
+       * each tube end cap along that tube's axis so they clear the cylinder geometry.
+       * For even-indexed gaps (i=0,2,...): the series chain passes through the +ends tips
+       *   of both tube i and tube i+1, so the resistor connects those tips.
+       * For odd-indexed gaps  (i=1,3,...): the chain passes through the -ends tips. */
+      for (unsigned i=0; i<uN-1; ++i){
+        double rsign = (i % 2 == 0) ? 1.0 : -1.0;
+        /* Unit vectors along each tube's axis */
+        double rx0 = positions[3*i+0] + rsign*(ends[3*i+0] + scales[i  ]*ends[3*i+0]);
+        double ry0 = positions[3*i+1] + rsign*(ends[3*i+1] + scales[i  ]*ends[3*i+1]);
+        double rz0 = positions[3*i+2] + rsign*(ends[3*i+2] + scales[i  ]*ends[3*i+2]);
+        double rx1 = positions[3*i+3] + rsign*(ends[3*i+3] + scales[i+1]*ends[3*i+3]);
+        double ry1 = positions[3*i+4] + rsign*(ends[3*i+4] + scales[i+1]*ends[3*i+4]);
+        double rz1 = positions[3*i+5] + rsign*(ends[3*i+5] + scales[i+1]*ends[3*i+5]);
+        double rdx = rx1-rx0, rdy = ry1-ry0, rdz = rz1-rz0;
+        double rlen = sqrt(rdx*rdx + rdy*rdy + rdz*rdz);
+        /* Perpendicular for zigzag teeth: cross resistor direction with Y; fall back to Z if parallel */
+        double rpx = 0., rpy = 0., rpz = 0.;
+        if (rlen > 0) {
+          double rnx = rdx/rlen, rny = rdy/rlen, rnz = rdz/rlen;
+          if (fabs(rny) < 0.9) { rpx = rnz;  rpy = 0.;  rpz = -rnx; } /* (0,1,0) x rn */
+          else                  { rpx = -rny; rpy = rnx; rpz = 0.;   } /* (0,0,1) x rn */
+        }
+        double zamp = rlen * 0.12;
+        multiline(7,
+          rx0,                     ry0,                     rz0,
+          rx0+rdx/6.+rpx*zamp,    ry0+rdy/6.+rpy*zamp,    rz0+rdz/6.+rpz*zamp,
+          rx0+rdx*2./6.-rpx*zamp, ry0+rdy*2./6.-rpy*zamp, rz0+rdz*2./6.-rpz*zamp,
+          rx0+rdx*3./6.+rpx*zamp, ry0+rdy*3./6.+rpy*zamp, rz0+rdz*3./6.+rpz*zamp,
+          rx0+rdx*4./6.-rpx*zamp, ry0+rdy*4./6.-rpy*zamp, rz0+rdz*4./6.-rpz*zamp,
+          rx0+rdx*5./6.+rpx*zamp, ry0+rdy*5./6.+rpy*zamp, rz0+rdz*5./6.+rpz*zamp,
+          rx1,                     ry1,                     rz1);
+      }
+    }
+
+    /* Readout labels drawn with line segments in the XY plane (width=X, height=Y).
+     * Letter A: two diagonal legs forming /\ with a horizontal crossbar.
+     * Letter B: left vertical stroke with top and bottom bumps on the right.
+     * Labels are offset beyond the tube end along the tube axis by 2.5 * radius.
+     *
+     * Series mode:  'A' at the -ends tip of tube 0; 'B' at the chain end of tube N-1
+     *               (which is the +ends tip when N-1 is even, -ends tip when N-1 is odd).
+     * Parallel mode: every tube labelled independently — 'A' at -ends, 'B' at +ends. */
+#define DRAW_LABEL_A(lx, ly, lz, s) \
+      multiline(3, (lx)-(s),(ly)-(s),(lz), (lx),(ly)+(s),(lz), (lx)+(s),(ly)-(s),(lz)); \
+      line((lx)-(s)*0.5,(ly),(lz), (lx)+(s)*0.5,(ly),(lz))
+#define DRAW_LABEL_B(lx, ly, lz, s) \
+      line((lx)-(s)*0.3,(ly)-(s),(lz), (lx)-(s)*0.3,(ly)+(s),(lz)); \
+      multiline(5, (lx)-(s)*0.3,(ly)+(s),(lz), \
+                   (lx)+(s)*0.5,(ly)+(s),(lz), (lx)+(s)*0.7,(ly)+(s)*0.5,(lz), \
+                   (lx)+(s)*0.5,(ly),(lz),     (lx)-(s)*0.3,(ly),(lz)); \
+      multiline(5, (lx)-(s)*0.3,(ly),(lz), \
+                   (lx)+(s)*0.6,(ly),(lz),     (lx)+(s)*0.8,(ly)-(s)*0.5,(lz), \
+                   (lx)+(s)*0.6,(ly)-(s),(lz), (lx)-(s)*0.3,(ly)-(s),(lz))
+
+    if (uN > 0) {
+      double lx, ly, lz, s, lax, lay, laz, off, inv_len;
+      if (wires_in_series) {
+        /* 'A' label at the -ends tip of tube 0 */
+        inv_len = (lengths[0] > 0) ? 1./lengths[0] : 0.;
+        lax = ends[0] * 2. * inv_len;
+        lay = ends[1] * 2. * inv_len;
+        laz = ends[2] * 2. * inv_len;
+        s   = radii[0];
+        off = s * 2.5;
+        lx  = positions[0] - ends[0] - lax*off;
+        ly  = positions[1] - ends[1] - lay*off;
+        lz  = positions[2] - ends[2] - laz*off;
+        DRAW_LABEL_A(lx, ly, lz, s);
+
+        /* 'B' label at the chain end of tube N-1.
+         * If N-1 is even the chain exits through the +ends tip; if odd through -ends. */
+        unsigned last = uN - 1;
+        double bsign = ((last % 2) == 0) ? 1.0 : -1.0;
+        inv_len = (lengths[last] > 0) ? 1./lengths[last] : 0.;
+        lax = ends[3*last+0] * 2. * inv_len;
+        lay = ends[3*last+1] * 2. * inv_len;
+        laz = ends[3*last+2] * 2. * inv_len;
+        s   = radii[last];
+        off = s * 2.5;
+        lx  = positions[3*last+0] + bsign*ends[3*last+0] + bsign*lax*off;
+        ly  = positions[3*last+1] + bsign*ends[3*last+1] + bsign*lay*off;
+        lz  = positions[3*last+2] + bsign*ends[3*last+2] + bsign*laz*off;
+        DRAW_LABEL_B(lx, ly, lz, s);
+      } else {
+        /* Parallel: label every tube independently */
+        for (unsigned i=0; i<uN; ++i){
+          inv_len = (lengths[i] > 0) ? 1./lengths[i] : 0.;
+          lax = ends[3*i+0] * 2. * inv_len;
+          lay = ends[3*i+1] * 2. * inv_len;
+          laz = ends[3*i+2] * 2. * inv_len;
+          s   = radii[i];
+          off = s * 2.5;
+          /* 'A' at -ends tip */
+          lx = positions[3*i+0] - ends[3*i+0] - lax*off;
+          ly = positions[3*i+1] - ends[3*i+1] - lay*off;
+          lz = positions[3*i+2] - ends[3*i+2] - laz*off;
+          DRAW_LABEL_A(lx, ly, lz, s);
+          /* 'B' at +ends tip */
+          lx = positions[3*i+0] + ends[3*i+0] + lax*off;
+          ly = positions[3*i+1] + ends[3*i+1] + lay*off;
+          lz = positions[3*i+2] + ends[3*i+2] + laz*off;
+          DRAW_LABEL_B(lx, ly, lz, s);
+        }
+      }
+    }
+#undef DRAW_LABEL_A
+#undef DRAW_LABEL_B
+  if (scales) free(scales);
   }
 %}
 
