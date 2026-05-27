@@ -2,6 +2,9 @@ DEFINE INSTRUMENT BIFROST_secondary (
 )
 DECLARE
 %{
+double * positions;
+double * ends;
+int N;
 %}
 
 USERVARS %{
@@ -16,6 +19,20 @@ int TUBE;
 
 INITIALIZE
 %{
+N = 100;
+positions = (double *) calloc(3*N, sizeof(double));
+ends = (double *) calloc(3*N, sizeof(double));
+for (int i=0; i<N; ++i){
+  double angle = 2*M_PI * (double) i / (double) N;
+  double r = 0.2 + 0.2*sin(angle)*sin(angle);
+  positions[3*i  ] = r * cos(angle);
+  positions[3*i+1] = r * sin(angle);
+  positions[3*i+2] = 0;
+  ends[3*i  ] = -0.1*cos(angle);
+  ends[3*i+1] = -0.1*sin(angle);
+  ends[3*i+2] = -0.1*cos(angle)*cos(angle);
+}
+
 %}
 TRACE
 
@@ -36,6 +53,20 @@ COMPONENT Triplet = Detector_tubes(
 )
 AT (0,0,0.1) RELATIVE Origin
 
+COMPONENT doublet = Detector_tubes(
+  wire_filename="doublet_wire.dat", 
+  pack_filename="doublet_pack.dat",
+  wires_in_series=1,
+  charge_a="event_charge_left",
+  charge_b="event_charge_right", detection_time="event_time",
+  radius = 0.0125 / 2,
+  width=0.05, height=0.2,
+  N=2,
+  restore_neutron=1
+)
+AT (0.5,0.2,0.1) RELATIVE Origin
+
+
 COMPONENT Septuplet = Detector_tubes(
   wire_filename="septuplet_wire.dat", pack_filename="septuplet_pack.dat", wires_in_series=1,
   charge_a="event_charge_left", charge_b="event_charge_right", detection_time="event_time",
@@ -54,6 +85,9 @@ COMPONENT Array = Detector_tubes(radius=0.0254/2, height=0.5, N=24, width=0.84, 
   ,curvature=1
 )
 AT (0,0,0.5) RELATIVE Origin
+
+COMPONENT Mantle = Detector_tubes(radius=0.002, N=N, positions=positions, ends=ends, check_for_intersections=1, wires_in_series=1, annotate=1)
+AT (0,0,-0.3) RELATIVE Origin
 
 FINALLY
 %{

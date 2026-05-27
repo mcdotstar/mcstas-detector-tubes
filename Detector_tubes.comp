@@ -112,18 +112,20 @@ void Detector_tubes_hat(double * x, double* h){
   h[2] = x[2]/l;
 }
 
-/* Angle between [0,0,1] and vector */
+/* Z-rotation angle used by rot_set_rotation(..., phx, 0, phz) to map [0,1,0] onto vector */
 double Detector_tubes_angle_z(double * v){
   double h[3];
   Detector_tubes_hat(v, h);
   return atan2(h[0], h[1]);
 }
 
-/* Angle between [1,0,0] and vector */
+/* X-rotation angle used by rot_set_rotation(..., phx, 0, phz) to map [0,1,0] onto vector */
 double Detector_tubes_angle_x(double * v){
   double h[3];
   Detector_tubes_hat(v, h);
-  return atan2(h[2], h[1]);
+  /* With phy=0, rot_apply([0,1,0]) gives (cos(phx)sin(phz), cos(phx)cos(phz), -sin(phx)).
+   * Therefore phx must satisfy sin(phx) = -h[2]. */
+  return atan2(-h[2], sqrt(h[0] * h[0] + h[1] * h[1]));
 }
 
 /* Smooth step function for use in tube-end efficiency reduction */
