@@ -1,4 +1,5 @@
 from mccode_antlr.loader.loader import parse_mcstas_instr
+from mccode_antlr.utils import compile_and_run
 from textwrap import dedent
 from pytest import mark
 from functools import cache
@@ -11,24 +12,6 @@ def compiled(method):
     def skipped_method(*args, **kwargs):
         return method(*args, **kwargs)
     return skipped_method
-
-
-def compile_and_run(instr, parameters, run=True, dump=False):
-    from pathlib import Path
-    from tempfile import TemporaryDirectory
-    from mccode_antlr.translators.target import MCSTAS_GENERATOR
-    from mccode_antlr.run import mccode_compile, mccode_run_compiled
-
-    kwargs = dict(generator=MCSTAS_GENERATOR, dump_source=dump)
-    with TemporaryDirectory() as directory:
-        binary, target = mccode_compile(instr, directory, **kwargs)
-        # pick a not-yet-created folder for instrument output
-        out = Path(directory).joinpath('t')
-        result, dat_files = None, None
-        if run:
-            result, dat_files = mccode_run_compiled(binary, target, out, parameters)
-        return result, dat_files
-        
 
 def this_registry():
     from git import Repo
@@ -93,7 +76,7 @@ def detector_tubes():
     %}
     END
     """), registries=[this_registry()])
-    results, files = compile_and_run(instr, '-n 1000 which=0', dump=False)
+    results, files = compile_and_run(instr, '-n 1000 which=0', dump_source=False)
     lines = results.decode('utf-8').splitlines()
     return lines, files
 
@@ -124,5 +107,4 @@ def test_detector_tubes():
     assert sum(gaps) < 5, "Raster/randomness might put one event per gap"
     assert abs(sum(division)-sum(wire)) < 10, "All events should show up in the division signal, but one might be missing"
     
-
 
