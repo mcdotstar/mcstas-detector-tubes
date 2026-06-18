@@ -1,2 +1,3 @@
-mccode-antlr >= 0.11.0
+mccode-antlr >= 0.20.3
+scipp
 pytest
