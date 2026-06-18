@@ -91,18 +91,18 @@ def test_detector_tubes():
     assert 'division' in files
     # verify that the output files are as expected ...
     
-    pack = files['pack'].structured['I']
+    pack = files['pack']['I'].data.values
     assert sum(pack[:]) == 1000, "Every produced ray should be detected"
     assert std(pack[:]) == 0, "All 2-D pixels should be hit the same number of times"
     
-    wire = files['wire'].structured['I']
+    wire = files['wire']['I'].data.values
     assert sum(wire) == 1000, "The wire output indexes the same pixelated space"
     assert std(wire) == 0
     
     # Now the real test for charge division correctness. The ratios of (1m)*rho and R have been chosen as 2:1.
     # This means that each tube should be twice as long as a gap in charge-division; so the whole
     # space needs to be divisible by 14 = 2*5 + 4 to have an integer number of bins per section.
-    division = files['division'].structured['I']
+    division = files['division']['I'].data.values
     gaps = division[[2, 5, 8, 11]]
     assert sum(gaps) < 5, "Raster/randomness might put one event per gap"
     assert abs(sum(division)-sum(wire)) < 10, "All events should show up in the division signal, but one might be missing"
