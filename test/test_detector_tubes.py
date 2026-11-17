@@ -108,3 +108,72 @@ def test_detector_tubes():
     assert abs(sum(division)-sum(wire)) < 10, "All events should show up in the division signal, but one might be missing"
     
 
+
+
+def series_resistors(component: str, series: str):
+    """Three tubes in series, with resistances Rs = {0, 2000, 2000, 0} ohm between them.
+
+    Each tube's wire is 4000 ohm, so along the wire the charge-division ratio runs over
+    tube, resistor, tube, resistor, tube in the proportions 2:1:2:1:2 -- 8 equal bins, of
+    which the 3rd and 6th must stay empty.
+    """
+    instr = parse_mcstas_instr(dedent(f"""
+    DEFINE INSTRUMENT py_test_series_resistors(int which=0)
+    DECLARE %{{
+    double diameter=0.1;
+    double raster_height;
+    int raster_count=100;
+    double resistances[] = {{0, 2000, 2000, 0}};
+    %}}
+    USERVARS %{{
+    int charge_left;
+    int charge_right;
+    %}}
+    INITIALIZE %{{
+    raster_height = 1.0 / (double)raster_count;
+    %}}
+    TRACE
+    COMPONENT source = Arm() AT (0, 0, 0) ABSOLUTE
+    EXTEND %{{
+      long long n = mcget_run_num();
+      long long i = n % 3;
+      long long j = (n / 3) % raster_count;
+      x = ((double)i - 1.0) * diameter;
+      y = ((double)j - raster_count/2 + 0.5) * raster_height;
+      z = 0;
+      vx = 0;
+      vy = 0;
+      vz = 1;
+      p = 1.0;
+    %}}
+
+    COMPONENT three_tubes = {component}(
+      width=3*diameter+1e-6, height=raster_count * raster_height, radius=diameter/2, no=10, N=3,
+      rho=4000.0, Rs=resistances, dead_length=0, wire_filename="wire", {series}
+      charge_a="charge_left", charge_b="charge_right"
+    ) AT (0, 0, 1) ABSOLUTE
+    EXTEND %{{
+    if (SCATTERED){{
+      x = (double)charge_left / (double)(charge_right + charge_left);
+      y = 0;
+    }}
+    %}}
+
+    COMPONENT recorder = PSDlin_monitor(
+      xmin=0, xmax=1, ymin=-0.1, ymax=0.1, nbins=8, filename="division"
+    ) AT (0, 0, 2) ABSOLUTE
+    END
+    """), registries=[this_registry()])
+    results, files = compile_and_run(instr, '-n 1500 which=0', dump_source=False)
+    return files
+
+
+@compiled
+@mark.parametrize('component, series', [('Detector_tubes', 'wires_in_series=1,'), ('Detector_time_tubes', '')])
+def test_series_resistors(component, series):
+    """Rs[i+1] is the resistor after tube i: a wrong index shifts the tubes along the wire."""
+    from numpy import sum, abs
+    division = series_resistors(component, series)['division']['I'].data.values
+    assert sum(division[[2, 5]]) < 5, f"the resistors' share of the wire must be empty: {division}"
+    tubes = division[[0, 1, 3, 4, 6, 7]]
+    assert all(abs(tubes - 250) < 10), f"each tube must fill its two bins evenly: {division}"
